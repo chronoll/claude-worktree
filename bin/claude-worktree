@@ -286,14 +286,18 @@ switch_worktree() {
         echo "🚀 Opening new iTerm2 tab with split panes..."
         echo "📂 Top pane: Terminal in $worktree_dir"
         echo "🤖 Bottom pane: Claude Code"
+        
+        # Convert to absolute path
+        local abs_worktree_dir=$(cd "$worktree_dir" && pwd)
+        
         osascript << EOF
 tell application "iTerm2"
     tell current window
         create tab with default profile
         tell current session of current tab
             -- Set up top pane (terminal)
-            write text "cd '$worktree_dir'"
-            write text "echo '📂 Terminal ready in worktree: \$(basename \"$worktree_dir\")'"
+            write text "cd '$abs_worktree_dir'"
+            write text "echo '📂 Terminal ready in worktree: \$(basename \"$abs_worktree_dir\")'"
             
             -- Split horizontally to create bottom pane
             split horizontally with default profile
@@ -301,7 +305,7 @@ tell application "iTerm2"
         
         -- Configure bottom pane (claude)
         tell last session of current tab
-            write text "cd '$worktree_dir'"
+            write text "cd '$abs_worktree_dir'"
             write text "claude"
         end tell
     end tell
@@ -369,6 +373,9 @@ create_worktree() {
         echo "📁 Directory: $worktree_dir"
         echo "🌿 Branch: $branch_name"
         
+        # Get absolute path before changing directory
+        local abs_worktree_dir=$(cd "$worktree_dir" && pwd)
+        
         # Record parent branch in git config
         local parent_branch=$(git branch --show-current)
         cd "$worktree_dir"
@@ -386,14 +393,15 @@ create_worktree() {
             echo "🚀 Opening new iTerm2 tab with split panes..."
             echo "📂 Top pane: Terminal in $worktree_dir"
             echo "🤖 Bottom pane: Claude Code"
+            
             osascript << EOF
 tell application "iTerm2"
     tell current window
         create tab with default profile
         tell current session of current tab
             -- Set up top pane (terminal)
-            write text "cd '$worktree_dir'"
-            write text "echo '📂 Terminal ready in worktree: \$(basename \"$worktree_dir\")'"
+            write text "cd '$abs_worktree_dir'"
+            write text "echo '📂 Terminal ready in worktree: \$(basename \"$abs_worktree_dir\")'"
             
             -- Split horizontally to create bottom pane
             split horizontally with default profile
@@ -401,7 +409,7 @@ tell application "iTerm2"
         
         -- Configure bottom pane (claude)
         tell last session of current tab
-            write text "cd '$worktree_dir'"
+            write text "cd '$abs_worktree_dir'"
             write text "claude"
         end tell
     end tell
@@ -409,7 +417,7 @@ end tell
 EOF
         else
             echo "🚀 Starting Claude Code..."
-            claude
+            cd "$worktree_dir" && claude
         fi
     else
         echo "❌ Failed to create worktree"
