@@ -1,0 +1,146 @@
+#!/bin/bash
+
+# Claude Tools CLI
+# Usage: claude-tools <command> [options]
+
+REPO_NAME=$(basename $(pwd))
+WORKTREE_BASE="../project-claude-${REPO_NAME}"
+
+# Check if we're in a git repository
+check_git_repo() {
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        echo "Error: Not in a git repository"
+        exit 1
+    fi
+}
+
+# Show help message
+show_help() {
+    echo "Claude Worktree CLI - Worktree management for Claude Code"
+    echo ""
+    echo "Usage:"
+    echo "  claude-worktree worktree <identifier>    Create new worktree and start Claude Code"
+    echo "  claude-worktree list                     List all worktrees for this repository"
+    echo "  claude-worktree switch <identifier>      Switch to existing worktree"
+    echo "  claude-worktree help                     Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  claude-worktree worktree netflix-clone   # Create and start new worktree"
+    echo "  claude-worktree list                     # Show all worktrees"
+    echo "  claude-worktree switch netflix-clone     # Switch to existing worktree"
+}
+
+# List worktrees for this repository
+list_worktrees() {
+    check_git_repo
+    
+    echo "📋 Worktrees for repository: $REPO_NAME"
+    echo ""
+    
+    if [ ! -d "$WORKTREE_BASE" ]; then
+        echo "No worktrees found. Create one with: claude-worktree worktree <identifier>"
+        return
+    fi
+    
+    for dir in "$WORKTREE_BASE"/*; do
+        if [ -d "$dir" ]; then
+            identifier=$(basename "$dir")
+            if git worktree list | grep -q "$dir"; then
+                branch=$(git worktree list | grep "$dir" | awk '{print $3}' | tr -d '[]')
+                echo "🌿 $identifier -> $branch"
+            fi
+        fi
+    done
+}
+
+# Switch to existing worktree
+switch_worktree() {
+    local identifier="$1"
+    
+    if [ -z "$identifier" ]; then
+        echo "Usage: claude-worktree switch <identifier>"
+        echo "Use 'claude-worktree list' to see available worktrees"
+        exit 1
+    fi
+    
+    check_git_repo
+    
+    local worktree_dir="$WORKTREE_BASE/$identifier"
+    
+    if [ ! -d "$worktree_dir" ]; then
+        echo "❌ Worktree '$identifier' not found"
+        echo "Available worktrees:"
+        list_worktrees
+        exit 1
+    fi
+    
+    echo "🔄 Switching to worktree: $identifier"
+    echo "📁 Directory: $worktree_dir"
+    
+    cd "$worktree_dir" && echo "🚀 Starting Claude Code..." && claude
+}
+
+# Create new worktree
+create_worktree() {
+    local identifier="$1"
+    
+    if [ -z "$identifier" ]; then
+        echo "Usage: claude-worktree worktree <identifier>"
+        echo "Example: claude-worktree worktree netflix-clone"
+        exit 1
+    fi
+    
+    check_git_repo
+    
+    local worktree_dir="$WORKTREE_BASE/$identifier"
+    local branch_name="feature/kurotaka-claude/$identifier"
+    
+    # Check if worktree already exists
+    if [ -d "$worktree_dir" ]; then
+        echo "⚠️  Worktree '$identifier' already exists"
+        echo "Use 'claude-worktree switch $identifier' to switch to it"
+        exit 1
+    fi
+    
+    # Create worktree
+    echo "Creating worktree: $worktree_dir"
+    echo "Branch: $branch_name"
+    
+    git worktree add "$worktree_dir" -b "$branch_name"
+    
+    if [ $? -eq 0 ]; then
+        echo "✅ Worktree created successfully"
+        echo "📁 Directory: $worktree_dir"
+        echo "🌿 Branch: $branch_name"
+        echo ""
+        echo "Moving to worktree directory..."
+        cd "$worktree_dir"
+        
+        echo "🚀 Starting Claude Code..."
+        claude
+    else
+        echo "❌ Failed to create worktree"
+        exit 1
+    fi
+}
+
+# Main command dispatcher
+case "$1" in
+    "worktree")
+        create_worktree "$2"
+        ;;
+    "list")
+        list_worktrees
+        ;;
+    "switch")
+        switch_worktree "$2"
+        ;;
+    "help"|"--help"|"-h"|"")
+        show_help
+        ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Use 'claude-worktree help' for usage information"
+        exit 1
+        ;;
+esac
