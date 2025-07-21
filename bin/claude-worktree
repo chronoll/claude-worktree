@@ -55,12 +55,14 @@ show_help() {
     echo "  claude-worktree worktree <identifier>    Create new worktree and start Claude Code"
     echo "  claude-worktree list                     List all worktrees for this repository"
     echo "  claude-worktree switch <identifier>      Switch to existing worktree"
+    echo "  claude-worktree merge                    Merge current worktree to parent branch"
     echo "  claude-worktree help                     Show this help message"
     echo ""
     echo "Examples:"
     echo "  claude-worktree worktree netflix-clone   # Create and start new worktree"
     echo "  claude-worktree list                     # Show all worktrees"
     echo "  claude-worktree switch netflix-clone     # Switch to existing worktree"
+    echo "  claude-worktree merge                    # Merge to parent branch"
 }
 
 # List worktrees for this repository with hierarchical display
@@ -338,19 +340,130 @@ create_worktree() {
         echo "📁 Directory: $worktree_dir"
         echo "🌿 Branch: $branch_name"
         
+        # Record parent branch in git config
+        local parent_branch=$(git branch --show-current)
+        cd "$worktree_dir"
+        git config --local worktree.parent-branch "$parent_branch"
+        echo "📌 Parent branch recorded: $parent_branch"
+        
         if [ "$IN_WORKTREE" = "true" ]; then
             echo "🔗 Full path: $full_path"
         fi
         
         echo ""
-        echo "Moving to worktree directory..."
-        cd "$worktree_dir"
-        
         echo "🚀 Starting Claude Code..."
         claude
     else
         echo "❌ Failed to create worktree"
         exit 1
+    fi
+}
+
+# Merge current worktree to parent branch
+merge_to_parent() {
+    check_git_repo
+    
+    # Get current branch
+    local current_branch=$(git branch --show-current)
+    if [ -z "$current_branch" ]; then
+        echo "❌ Not on a branch (detached HEAD state)"
+        exit 1
+    fi
+    
+    # Get parent branch from git config
+    local parent_branch=$(git config --local worktree.parent-branch)
+    
+    if [ -z "$parent_branch" ]; then
+        echo "❌ No parent branch found in git config"
+        echo ""
+        echo "This might happen if:"
+        echo "1. This worktree was created before the parent tracking feature"
+        echo "2. The worktree was created manually without claude-worktree"
+        echo ""
+        echo "You can manually set the parent branch:"
+        echo "  git config --local worktree.parent-branch <parent-branch-name>"
+        exit 1
+    fi
+    
+    echo "🔍 Current branch: $current_branch"
+    echo "🎯 Parent branch: $parent_branch"
+    echo ""
+    
+    # Check if parent branch exists
+    if ! git show-ref --verify --quiet "refs/heads/$parent_branch"; then
+        echo "❌ Parent branch '$parent_branch' does not exist"
+        echo "Available branches:"
+        git branch -a
+        exit 1
+    fi
+    
+    # Check for uncommitted changes
+    if ! git diff-index --quiet HEAD --; then
+        echo "❌ You have uncommitted changes. Please commit or stash them first."
+        git status --short
+        exit 1
+    fi
+    
+    # Fetch latest changes
+    echo "📥 Fetching latest changes..."
+    git fetch origin
+    
+    # Get merge strategy from user
+    echo ""
+    echo "Select merge strategy:"
+    echo "1) Fast-forward only (--ff-only)"
+    echo "2) Create merge commit (--no-ff)"
+    echo "3) Cancel"
+    read -p "Choice [1-3]: " choice
+    
+    local merge_flags=""
+    case "$choice" in
+        1)
+            merge_flags="--ff-only"
+            ;;
+        2)
+            merge_flags="--no-ff"
+            ;;
+        3)
+            echo "❌ Merge cancelled"
+            exit 0
+            ;;
+        *)
+            echo "❌ Invalid choice"
+            exit 1
+            ;;
+    esac
+    
+    # Switch to parent branch
+    echo ""
+    echo "🔄 Switching to parent branch..."
+    git checkout "$parent_branch"
+    
+    if [ $? -ne 0 ]; then
+        echo "❌ Failed to switch to parent branch"
+        exit 1
+    fi
+    
+    # Perform merge
+    echo "🔀 Merging $current_branch into $parent_branch..."
+    git merge $merge_flags "$current_branch"
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo "✅ Merge completed successfully!"
+        echo ""
+        echo "Next steps:"
+        echo "1. Review the changes: git log --oneline -n 5"
+        echo "2. Push to remote: git push origin $parent_branch"
+        echo "3. Return to worktree: git checkout $current_branch"
+    else
+        echo ""
+        echo "❌ Merge failed or has conflicts"
+        echo ""
+        echo "To resolve:"
+        echo "1. Fix conflicts if any: git status"
+        echo "2. Complete merge: git add . && git commit"
+        echo "3. Or abort: git merge --abort"
     fi
 }
 
@@ -364,6 +477,9 @@ case "$1" in
         ;;
     "switch")
         switch_worktree "$2"
+        ;;
+    "merge")
+        merge_to_parent
         ;;
     "help"|"--help"|"-h"|"")
         show_help
