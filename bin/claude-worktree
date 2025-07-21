@@ -70,20 +70,34 @@ list_worktrees() {
     echo "📋 Worktrees for repository: $REPO_NAME"
     echo ""
     
-    # Get all worktrees from git
-    local worktree_list
-    worktree_list=$(git worktree list | tail -n +2)  # Skip main repo
+    # Get all worktrees from git, filtering out prunable ones and checking existence
+    local valid_worktrees=""
+    local temp_file=$(mktemp)
+    git worktree list | tail -n +2 | grep -v " prunable" > "$temp_file"
     
-    if [ -z "$worktree_list" ]; then
-        echo "No worktrees found. Create one with: claude-worktree worktree <identifier>"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local worktree_path=$(echo "$line" | awk '{print $1}')
+        # Only include worktrees that actually exist on disk
+        if [ -d "$worktree_path" ]; then
+            valid_worktrees+="$line"$'\n'
+        fi
+    done < "$temp_file"
+    
+    rm -f "$temp_file"
+    
+    if [ -z "$valid_worktrees" ]; then
+        echo "No valid worktrees found. Create one with: claude-worktree worktree <identifier>"
         return
     fi
     
-    # Group worktrees by hierarchy
-    local main_repo_base="../project-claude-${REPO_NAME}"
-    local displayed_parents=()
+    # First, collect all worktrees and identify parent-child relationships
+    local temp_output_file=$(mktemp)
+    local displayed_parents_file=$(mktemp)
     
-    echo "$worktree_list" | while IFS= read -r line; do
+    # Process nested worktrees first to identify parents
+    echo "$valid_worktrees" | while IFS= read -r line; do
+        [ -z "$line" ] && continue
         local worktree_path=$(echo "$line" | awk '{print $1}')
         local branch=$(echo "$line" | awk '{print $3}' | tr -d '[]')
         local identifier=$(basename "$worktree_path")
@@ -94,40 +108,52 @@ list_worktrees() {
             local parent_path=$(echo "$worktree_path" | sed 's|/worktrees/.*||')
             local parent_name=$(basename "$parent_path")
             
-            # Check if we need to display the parent first
-            local parent_shown=false
-            for shown in "${displayed_parents[@]}"; do
-                if [ "$shown" = "$parent_name" ]; then
-                    parent_shown=true
-                    break
+            # Check if parent was already shown
+            if ! grep -q "^${parent_name}$" "$displayed_parents_file" 2>/dev/null; then
+                # Show parent worktree only if it exists in our valid list
+                local parent_line=$(echo "$valid_worktrees" | grep "^${parent_path}\s")
+                if [ -n "$parent_line" ]; then
+                    local parent_branch=$(echo "$parent_line" | awk '{print $3}' | tr -d '[]')
+                    echo "🌿 $parent_name -> $parent_branch" >> "$temp_output_file"
+                    echo "$parent_name" >> "$displayed_parents_file"
                 fi
-            done
-            
-            if [ "$parent_shown" = "false" ]; then
-                # Show parent worktree
-                local parent_branch=$(git worktree list | grep "^${parent_path}\s" | awk '{print $3}' | tr -d '[]')
-                echo "🌿 $parent_name -> $parent_branch"
-                displayed_parents+=("$parent_name")
             fi
             
             # Show nested worktree with indentation and full path
-            echo "  └── 🌿 $parent_name/$identifier -> $branch"
-        elif [[ "$worktree_path" == "$main_repo_base"* ]]; then
-            # Check if this is a parent that might have children
-            local has_children=false
-            if echo "$worktree_list" | grep -q "${worktree_path}/worktrees/"; then
-                has_children=true
-            fi
-            
-            # Only show if it doesn't have children (they'll be shown with children)
-            if [ "$has_children" = "false" ]; then
-                echo "🌿 $identifier -> $branch"
-            fi
-        else
-            # Show other worktrees normally
-            echo "🌿 $identifier -> $branch"
+            echo "  └── 🌿 $parent_name/$identifier -> $branch" >> "$temp_output_file"
         fi
     done
+    
+    # Then process root level worktrees (non-nested)
+    echo "$valid_worktrees" | while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        local worktree_path=$(echo "$line" | awk '{print $1}')
+        local branch=$(echo "$line" | awk '{print $3}' | tr -d '[]')
+        local identifier=$(basename "$worktree_path")
+        
+        # Skip nested worktrees (already processed above)
+        if [[ "$worktree_path" == */worktrees/* ]]; then
+            continue
+        fi
+        
+        # Check if this worktree has nested children
+        local has_children=false
+        if echo "$valid_worktrees" | grep -q "${worktree_path}/worktrees/"; then
+            has_children=true
+        fi
+        
+        # Only show root-level worktrees that don't have children (or parents already shown)
+        if [ "$has_children" = "false" ]; then
+            # Check if this was already displayed as a parent
+            if ! grep -q "^${identifier}$" "$displayed_parents_file" 2>/dev/null; then
+                echo "🌿 $identifier -> $branch" >> "$temp_output_file"
+            fi
+        fi
+    done
+    
+    # Output the results and cleanup
+    cat "$temp_output_file" 2>/dev/null || echo "No worktrees found."
+    rm -f "$temp_output_file" "$displayed_parents_file"
 }
 
 # Switch to existing worktree
