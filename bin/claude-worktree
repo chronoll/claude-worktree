@@ -3,15 +3,48 @@
 # Claude Tools CLI
 # Usage: claude-tools <command> [options]
 
-REPO_NAME=$(basename $(pwd))
-WORKTREE_BASE="../project-claude-${REPO_NAME}"
-
-# Check if we're in a git repository
-check_git_repo() {
-    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+# Get repository information
+get_repo_info() {
+    local git_root
+    git_root=$(git rev-parse --show-toplevel 2>/dev/null)
+    
+    if [ -z "$git_root" ]; then
         echo "Error: Not in a git repository"
         exit 1
     fi
+    
+    # Check if we're in the main repository or a worktree
+    local current_dir=$(pwd)
+    local main_repo_dir
+    
+    # Get the main repository directory from git worktree list
+    main_repo_dir=$(git worktree list | head -1 | awk '{print $1}')
+    
+    if [ "$current_dir" = "$main_repo_dir" ]; then
+        # We're in the main repository
+        REPO_NAME=$(basename "$main_repo_dir")
+        WORKTREE_BASE="../project-claude-${REPO_NAME}"
+        IN_WORKTREE=false
+    else
+        # We're in a worktree - check if current directory is a worktree
+        if git worktree list | grep -q "^${current_dir}\s"; then
+            # We're in a worktree
+            REPO_NAME=$(basename "$main_repo_dir")
+            WORKTREE_BASE="./worktrees"
+            IN_WORKTREE=true
+            MAIN_REPO_DIR="$main_repo_dir"
+        else
+            # We're in a subdirectory - use normal logic
+            REPO_NAME=$(basename "$git_root")
+            WORKTREE_BASE="../project-claude-${REPO_NAME}"
+            IN_WORKTREE=false
+        fi
+    fi
+}
+
+# Check if we're in a git repository
+check_git_repo() {
+    get_repo_info
 }
 
 # Show help message
@@ -30,25 +63,69 @@ show_help() {
     echo "  claude-worktree switch netflix-clone     # Switch to existing worktree"
 }
 
-# List worktrees for this repository
+# List worktrees for this repository with hierarchical display
 list_worktrees() {
     check_git_repo
     
     echo "📋 Worktrees for repository: $REPO_NAME"
     echo ""
     
-    if [ ! -d "$WORKTREE_BASE" ]; then
+    # Get all worktrees from git
+    local worktree_list
+    worktree_list=$(git worktree list | tail -n +2)  # Skip main repo
+    
+    if [ -z "$worktree_list" ]; then
         echo "No worktrees found. Create one with: claude-worktree worktree <identifier>"
         return
     fi
     
-    for dir in "$WORKTREE_BASE"/*; do
-        if [ -d "$dir" ]; then
-            identifier=$(basename "$dir")
-            if git worktree list | grep -q "$dir"; then
-                branch=$(git worktree list | grep "$dir" | awk '{print $3}' | tr -d '[]')
+    # Group worktrees by hierarchy
+    local main_repo_base="../project-claude-${REPO_NAME}"
+    local displayed_parents=()
+    
+    echo "$worktree_list" | while IFS= read -r line; do
+        local worktree_path=$(echo "$line" | awk '{print $1}')
+        local branch=$(echo "$line" | awk '{print $3}' | tr -d '[]')
+        local identifier=$(basename "$worktree_path")
+        
+        # Check if this is a nested worktree
+        if [[ "$worktree_path" == */worktrees/* ]]; then
+            # Extract parent worktree path
+            local parent_path=$(echo "$worktree_path" | sed 's|/worktrees/.*||')
+            local parent_name=$(basename "$parent_path")
+            
+            # Check if we need to display the parent first
+            local parent_shown=false
+            for shown in "${displayed_parents[@]}"; do
+                if [ "$shown" = "$parent_name" ]; then
+                    parent_shown=true
+                    break
+                fi
+            done
+            
+            if [ "$parent_shown" = "false" ]; then
+                # Show parent worktree
+                local parent_branch=$(git worktree list | grep "^${parent_path}\s" | awk '{print $3}' | tr -d '[]')
+                echo "🌿 $parent_name -> $parent_branch"
+                displayed_parents+=("$parent_name")
+            fi
+            
+            # Show nested worktree with indentation and full path
+            echo "  └── 🌿 $parent_name/$identifier -> $branch"
+        elif [[ "$worktree_path" == "$main_repo_base"* ]]; then
+            # Check if this is a parent that might have children
+            local has_children=false
+            if echo "$worktree_list" | grep -q "${worktree_path}/worktrees/"; then
+                has_children=true
+            fi
+            
+            # Only show if it doesn't have children (they'll be shown with children)
+            if [ "$has_children" = "false" ]; then
                 echo "🌿 $identifier -> $branch"
             fi
+        else
+            # Show other worktrees normally
+            echo "🌿 $identifier -> $branch"
         fi
     done
 }
@@ -59,18 +136,117 @@ switch_worktree() {
     
     if [ -z "$identifier" ]; then
         echo "Usage: claude-worktree switch <identifier>"
+        echo "       claude-worktree switch <parent>/<child>  # for nested worktrees"
         echo "Use 'claude-worktree list' to see available worktrees"
         exit 1
     fi
     
     check_git_repo
     
-    local worktree_dir="$WORKTREE_BASE/$identifier"
+    # Find worktree by identifier from git worktree list
+    local worktree_dir
+    local matches=()
+    local main_repo_base="../project-claude-${REPO_NAME}"
+    
+    # Check if identifier contains a slash (hierarchical path)
+    if [[ "$identifier" == *"/"* ]]; then
+        # Hierarchical path - look for exact nested worktree match
+        local parent_name=$(echo "$identifier" | cut -d'/' -f1)
+        local child_name=$(echo "$identifier" | cut -d'/' -f2-)
+        
+        # Find the nested worktree - must match exact hierarchy
+        worktree_dir=$(git worktree list | grep -E "/$parent_name/worktrees/$child_name\s" | awk '{print $1}' | head -1)
+        
+        if [ -z "$worktree_dir" ]; then
+            echo "❌ Nested worktree '$identifier' not found"
+            echo "Available worktrees:"
+            list_worktrees
+            echo ""
+            echo "💡 Use exact hierarchical path: parent/child"
+            exit 1
+        fi
+    else
+        # Simple identifier - check context-aware matching
+        check_git_repo
+        
+        # Check if we're currently in a worktree
+        local current_dir=$(pwd)
+        local current_worktree=""
+        
+        # Find current worktree from git worktree list (exact match)
+        local main_repo_path=$(git worktree list | head -1 | awk '{print $1}')
+        
+        if [[ "$current_dir" == "$main_repo_path" ]]; then
+            # We're in main repo, not in a worktree
+            current_worktree=""
+        else
+            while IFS= read -r line; do
+                local path=$(echo "$line" | awk '{print $1}')
+                if [[ "$current_dir" == "$path" ]]; then
+                    current_worktree="$path"
+                    break
+                fi
+            done < <(git worktree list | tail -n +2)  # Skip main repo
+        fi
+        
+        if [ -n "$current_worktree" ]; then
+            # We're in a worktree - look for child worktrees first
+            local current_name=$(basename "$current_worktree")
+            local child_path="$current_worktree/worktrees/$identifier"
+            
+            if git worktree list | grep -q "$child_path\s"; then
+                worktree_dir="$child_path"
+                echo "🔗 Found child worktree in current context"
+            fi
+        fi
+        
+        # If not found in current context, look for root-level worktrees
+        if [ -z "$worktree_dir" ]; then
+            while IFS= read -r line; do
+                local path=$(echo "$line" | awk '{print $1}')
+                local path_name=$(basename "$path")
+                # Check if this matches the identifier and is a root-level worktree (not nested)
+                if [[ "$path_name" == "$identifier" && ! "$path" == */worktrees/* ]]; then
+                    matches+=("$path")
+                fi
+            done < <(git worktree list | tail -n +2)  # Skip main repo
+            
+            if [ ${#matches[@]} -eq 1 ]; then
+                worktree_dir="${matches[0]}"
+            elif [ ${#matches[@]} -gt 1 ]; then
+                echo "❌ Multiple worktrees found for '$identifier':"
+                for match in "${matches[@]}"; do
+                    echo "   - $match"
+                done
+                echo ""
+                echo "💡 Use full path to specify exact worktree"
+                exit 1
+            fi
+        fi
+        
+        # Final check if nothing found
+        if [ -z "$worktree_dir" ]; then
+            echo "❌ Worktree '$identifier' not found"
+            echo ""
+            if [ -n "$current_worktree" ]; then
+                local current_name=$(basename "$current_worktree")
+                echo "💡 From $current_name, you can:"
+                echo "   - Switch to child: claude-worktree switch <child-name>"
+                echo "   - Switch to other: claude-worktree switch <full-path>"
+            else
+                echo "💡 From root, use:"
+                echo "   - Root worktree: claude-worktree switch <name>"
+                echo "   - Nested worktree: claude-worktree switch <parent>/<child>"
+            fi
+            echo ""
+            echo "Available worktrees:"
+            list_worktrees
+            exit 1
+        fi
+    fi
     
     if [ ! -d "$worktree_dir" ]; then
-        echo "❌ Worktree '$identifier' not found"
-        echo "Available worktrees:"
-        list_worktrees
+        echo "❌ Worktree directory not found: $worktree_dir"
         exit 1
     fi
     
@@ -92,26 +268,54 @@ create_worktree() {
     
     check_git_repo
     
-    local worktree_dir="$WORKTREE_BASE/$identifier"
-    local branch_name="feature/kurotaka-claude/$identifier"
+    local worktree_dir
+    local branch_name
+    local full_path
+    
+    # Determine worktree location and branch name based on context
+    if [ "$IN_WORKTREE" = "true" ]; then
+        # We're in a worktree - create nested worktree
+        local parent_name=$(basename $(pwd))
+        worktree_dir="$WORKTREE_BASE/$identifier"
+        branch_name="feature/kurotaka-claude/${parent_name}--${identifier}"
+        full_path="$parent_name/$identifier"
+        mkdir -p "$WORKTREE_BASE"
+        echo "Creating nested worktree in: $worktree_dir"
+        echo "Parent worktree: $parent_name"
+        echo "Full path: $full_path"
+    else
+        # Normal worktree creation
+        worktree_dir="$WORKTREE_BASE/$identifier"
+        branch_name="feature/kurotaka-claude/$identifier"
+        full_path="$identifier"
+        echo "Creating worktree: $worktree_dir"
+    fi
+    
+    echo "Branch: $branch_name"
     
     # Check if worktree already exists
-    if [ -d "$worktree_dir" ]; then
+    if git worktree list | grep -q "$worktree_dir\s"; then
         echo "⚠️  Worktree '$identifier' already exists"
-        echo "Use 'claude-worktree switch $identifier' to switch to it"
+        if [ "$IN_WORKTREE" = "true" ]; then
+            echo "Use 'claude-worktree switch $full_path' to switch to it"
+        else
+            echo "Use 'claude-worktree switch $identifier' to switch to it"
+        fi
         exit 1
     fi
     
     # Create worktree
-    echo "Creating worktree: $worktree_dir"
-    echo "Branch: $branch_name"
-    
     git worktree add "$worktree_dir" -b "$branch_name"
     
     if [ $? -eq 0 ]; then
         echo "✅ Worktree created successfully"
         echo "📁 Directory: $worktree_dir"
         echo "🌿 Branch: $branch_name"
+        
+        if [ "$IN_WORKTREE" = "true" ]; then
+            echo "🔗 Full path: $full_path"
+        fi
+        
         echo ""
         echo "Moving to worktree directory..."
         cd "$worktree_dir"
