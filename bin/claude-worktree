@@ -281,7 +281,24 @@ switch_worktree() {
     echo "🔄 Switching to worktree: $identifier"
     echo "📁 Directory: $worktree_dir"
     
-    cd "$worktree_dir" && echo "🚀 Starting Claude Code..." && claude
+    # Open new iTerm2 tab if running in iTerm2, otherwise use current tab
+    if [ "$TERM_PROGRAM" = "iTerm.app" ]; then
+        echo "🚀 Opening new iTerm2 tab and starting Claude Code..."
+        osascript << EOF
+tell application "iTerm2"
+    tell current window
+        create tab with default profile
+        tell current session of current tab
+            write text "cd '$worktree_dir'"
+            write text "claude"
+        end tell
+    end tell
+end tell
+EOF
+    else
+        echo "🚀 Starting Claude Code..."
+        cd "$worktree_dir" && claude
+    fi
 }
 
 # Create new worktree
