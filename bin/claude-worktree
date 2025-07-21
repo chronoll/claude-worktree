@@ -55,14 +55,14 @@ show_help() {
     echo "  claude-worktree worktree <identifier>    Create new worktree and start Claude Code"
     echo "  claude-worktree list                     List all worktrees for this repository"
     echo "  claude-worktree switch <identifier>      Switch to existing worktree"
-    echo "  claude-worktree merge                    Merge current worktree to parent branch"
+    echo "  claude-worktree apply                    Apply current changes to parent branch"
     echo "  claude-worktree help                     Show this help message"
     echo ""
     echo "Examples:"
     echo "  claude-worktree worktree netflix-clone   # Create and start new worktree"
     echo "  claude-worktree list                     # Show all worktrees"
     echo "  claude-worktree switch netflix-clone     # Switch to existing worktree"
-    echo "  claude-worktree merge                    # Merge to parent branch"
+    echo "  claude-worktree apply                    # Apply changes to parent branch"
 }
 
 # List worktrees for this repository with hierarchical display
@@ -359,8 +359,8 @@ create_worktree() {
     fi
 }
 
-# Merge current worktree to parent branch
-merge_to_parent() {
+# Apply current worktree changes to parent branch
+apply_to_parent() {
     check_git_repo
     
     # Get current branch
@@ -404,6 +404,25 @@ merge_to_parent() {
         exit 1
     fi
     
+    # Find parent worktree directory
+    local parent_worktree_dir=""
+    while IFS= read -r line; do
+        local worktree_path=$(echo "$line" | awk '{print $1}')
+        local worktree_branch=$(echo "$line" | awk '{print $3}' | tr -d '[]')
+        if [ "$worktree_branch" = "$parent_branch" ]; then
+            parent_worktree_dir="$worktree_path"
+            break
+        fi
+    done < <(git worktree list)
+    
+    if [ -z "$parent_worktree_dir" ]; then
+        echo "❌ Parent branch '$parent_branch' is not checked out in any worktree"
+        echo "Please ensure the parent branch has an active worktree."
+        exit 1
+    fi
+    
+    echo "📁 Parent worktree: $parent_worktree_dir"
+    
     # Fetch latest changes
     echo "📥 Fetching latest changes..."
     git fetch origin
@@ -425,7 +444,7 @@ merge_to_parent() {
             merge_flags="--no-ff"
             ;;
         3)
-            echo "❌ Merge cancelled"
+            echo "❌ Apply cancelled"
             exit 0
             ;;
         *)
@@ -434,36 +453,39 @@ merge_to_parent() {
             ;;
     esac
     
-    # Switch to parent branch
+    # Execute merge in parent worktree
     echo ""
-    echo "🔄 Switching to parent branch..."
-    git checkout "$parent_branch"
+    echo "🔄 Applying changes in parent worktree..."
+    echo "Running: cd $parent_worktree_dir && git merge $merge_flags $current_branch"
     
-    if [ $? -ne 0 ]; then
-        echo "❌ Failed to switch to parent branch"
-        exit 1
-    fi
+    # Save current directory
+    local current_dir=$(pwd)
     
-    # Perform merge
-    echo "🔀 Merging $current_branch into $parent_branch..."
+    # Change to parent worktree and perform merge
+    cd "$parent_worktree_dir"
     git merge $merge_flags "$current_branch"
+    local merge_result=$?
     
-    if [ $? -eq 0 ]; then
+    # Return to original directory
+    cd "$current_dir"
+    
+    if [ $merge_result -eq 0 ]; then
         echo ""
-        echo "✅ Merge completed successfully!"
+        echo "✅ Changes applied successfully!"
         echo ""
         echo "Next steps:"
-        echo "1. Review the changes: git log --oneline -n 5"
-        echo "2. Push to remote: git push origin $parent_branch"
-        echo "3. Return to worktree: git checkout $current_branch"
+        echo "1. Review changes in parent worktree: cd $parent_worktree_dir"
+        echo "2. Push to remote: cd $parent_worktree_dir && git push origin $parent_branch"
+        echo "3. Continue working in current worktree"
     else
         echo ""
-        echo "❌ Merge failed or has conflicts"
+        echo "❌ Apply failed or has conflicts"
         echo ""
         echo "To resolve:"
-        echo "1. Fix conflicts if any: git status"
-        echo "2. Complete merge: git add . && git commit"
-        echo "3. Or abort: git merge --abort"
+        echo "1. Go to parent worktree: cd $parent_worktree_dir"
+        echo "2. Fix conflicts: git status"
+        echo "3. Complete merge: git add . && git commit"
+        echo "4. Or abort: git merge --abort"
     fi
 }
 
@@ -478,8 +500,8 @@ case "$1" in
     "switch")
         switch_worktree "$2"
         ;;
-    "merge")
-        merge_to_parent
+    "apply")
+        apply_to_parent
         ;;
     "help"|"--help"|"-h"|"")
         show_help
