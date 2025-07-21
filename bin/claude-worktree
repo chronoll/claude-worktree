@@ -290,6 +290,11 @@ switch_worktree() {
         # Convert to absolute path
         local abs_worktree_dir=$(cd "$worktree_dir" && pwd)
         
+        # Get parent session ID for inheritance
+        local parent_session_id
+        local main_repo_dir=$(git worktree list | head -1 | awk '{print $1}')
+        parent_session_id=$(get_latest_session_id "$main_repo_dir")
+        
         osascript << EOF
 tell application "iTerm2"
     tell current window
@@ -306,14 +311,47 @@ tell application "iTerm2"
         -- Configure bottom pane (claude)
         tell last session of current tab
             write text "cd '$abs_worktree_dir'"
+        end tell
+    end tell
+end tell
+EOF
+        
+        # Add session inheritance if available
+        if [ -n "$parent_session_id" ]; then
+            echo "🔄 Inheriting session: $parent_session_id"
+            osascript << EOF
+tell application "iTerm2"
+    tell current window
+        tell last session of current tab
+            write text "claude --resume '$parent_session_id'"
+        end tell
+    end tell
+end tell
+EOF
+        else
+            osascript << EOF
+tell application "iTerm2"
+    tell current window
+        tell last session of current tab
             write text "claude"
+        end tell
+    end tell
+end tell
+EOF
+        fi
+        
+        osascript << EOF
+tell application "iTerm2"
+    tell current window
+        tell last session of current tab
+            -- Bottom pane setup complete
         end tell
     end tell
 end tell
 EOF
     else
         echo "🚀 Starting Claude Code..."
-        cd "$worktree_dir" && claude
+        cd "$worktree_dir" && start_claude_with_session
     fi
 }
 
@@ -382,6 +420,9 @@ create_worktree() {
         git config --local worktree.parent-branch "$parent_branch"
         echo "📌 Parent branch recorded: $parent_branch"
         
+        # Inherit .claude settings from parent
+        inherit_claude_settings
+        
         if [ "$IN_WORKTREE" = "true" ]; then
             echo "🔗 Full path: $full_path"
         fi
@@ -393,6 +434,18 @@ create_worktree() {
             echo "🚀 Opening new iTerm2 tab with split panes..."
             echo "📂 Top pane: Terminal in $worktree_dir"
             echo "🤖 Bottom pane: Claude Code"
+            
+            # Get parent session ID for inheritance
+            local parent_session_id
+            if [ "$IN_WORKTREE" = "true" ]; then
+                # Get session from parent worktree
+                local parent_worktree_dir=$(pwd | sed 's|/worktrees/.*||')
+                parent_session_id=$(get_latest_session_id "$parent_worktree_dir")
+            else
+                # Get session from main repository
+                local main_repo_dir=$(git worktree list | head -1 | awk '{print $1}')
+                parent_session_id=$(get_latest_session_id "$main_repo_dir")
+            fi
             
             osascript << EOF
 tell application "iTerm2"
@@ -410,18 +463,162 @@ tell application "iTerm2"
         -- Configure bottom pane (claude)
         tell last session of current tab
             write text "cd '$abs_worktree_dir'"
+        end tell
+    end tell
+end tell
+EOF
+            
+            # Add session inheritance if available
+            if [ -n "$parent_session_id" ]; then
+                echo "🔄 Inheriting session from parent: $parent_session_id"
+                osascript << EOF
+tell application "iTerm2"
+    tell current window
+        tell last session of current tab
+            write text "claude --resume '$parent_session_id'"
+        end tell
+    end tell
+end tell
+EOF
+            else
+                echo "ℹ️  No parent session found - starting fresh"
+                osascript << EOF
+tell application "iTerm2"
+    tell current window
+        tell last session of current tab
             write text "claude"
+        end tell
+    end tell
+end tell
+EOF
+            fi
+            
+            osascript << EOF
+tell application "iTerm2"
+    tell current window
+        tell last session of current tab
+            -- Bottom pane setup complete
         end tell
     end tell
 end tell
 EOF
         else
             echo "🚀 Starting Claude Code..."
-            cd "$worktree_dir" && claude
+            start_claude_with_session
         fi
     else
         echo "❌ Failed to create worktree"
         exit 1
+    fi
+}
+
+# Start Claude Code with session inheritance from parent
+start_claude_with_session() {
+    local parent_session_id
+    
+    # Try to find parent session
+    if [ "$IN_WORKTREE" = "true" ]; then
+        # We're creating nested worktree - get session from parent worktree
+        local parent_worktree_dir=$(pwd | sed 's|/worktrees/.*||')
+        parent_session_id=$(get_latest_session_id "$parent_worktree_dir")
+        if [ -n "$parent_session_id" ]; then
+            echo "🔄 Inheriting session from parent worktree: $parent_session_id"
+        fi
+    else
+        # We're creating root worktree - get session from main repository
+        local main_repo_dir=$(git worktree list | head -1 | awk '{print $1}')
+        parent_session_id=$(get_latest_session_id "$main_repo_dir")
+        if [ -n "$parent_session_id" ]; then
+            echo "🔄 Inheriting session from main repository: $parent_session_id"
+        fi
+    fi
+    
+    # Start Claude with or without session resumption
+    if [ -n "$parent_session_id" ]; then
+        claude --resume "$parent_session_id"
+    else
+        echo "ℹ️  No parent session found - starting fresh"
+        claude
+    fi
+}
+
+# Get the latest session ID for a given directory
+get_latest_session_id() {
+    local project_dir="$1"
+    # Convert absolute path to Claude's project directory format
+    # Remove leading slash and replace remaining slashes with hyphens, then add leading hyphen
+    local escaped_path=$(echo "$project_dir" | sed 's|^/||' | sed 's|/|-|g')
+    local session_dir="$HOME/.claude/projects/-$escaped_path"
+    
+    echo "🔍 Looking for sessions in: $session_dir" >&2
+    
+    if [ -d "$session_dir" ]; then
+        # Find the most recent .jsonl file and extract session ID
+        local latest_file=$(find "$session_dir" -name "*.jsonl" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+        if [ -n "$latest_file" ]; then
+            echo "📂 Found latest session file: $latest_file" >&2
+            basename "$latest_file" .jsonl
+        else
+            echo "⚠️  No session files found in directory" >&2
+        fi
+    else
+        echo "⚠️  Session directory does not exist: $session_dir" >&2
+    fi
+}
+
+# Inherit .claude settings from parent directory
+inherit_claude_settings() {
+    local parent_dir
+    local source_claude_dir
+    
+    # Determine parent directory based on context
+    if [ "$IN_WORKTREE" = "true" ]; then
+        # We're creating a nested worktree - inherit from current worktree
+        parent_dir=$(pwd | sed 's|/worktrees/.*||')
+        source_claude_dir="$parent_dir/.claude"
+        echo "🔗 Inheriting from parent worktree: $parent_dir"
+    else
+        # We're creating a root worktree - inherit from main repository
+        parent_dir="$MAIN_REPO_DIR"
+        if [ -z "$parent_dir" ]; then
+            parent_dir=$(git worktree list | head -1 | awk '{print $1}')
+        fi
+        source_claude_dir="$parent_dir/.claude"
+        echo "🔗 Inheriting from main repository: $parent_dir"
+    fi
+    
+    local target_claude_dir="./.claude"
+    
+    # Check if parent has .claude directory
+    if [ -d "$source_claude_dir" ]; then
+        echo "📋 Copying .claude settings..."
+        
+        # Create .claude directory in new worktree
+        mkdir -p "$target_claude_dir"
+        
+        # Copy settings.local.json if it exists
+        if [ -f "$source_claude_dir/settings.local.json" ]; then
+            cp "$source_claude_dir/settings.local.json" "$target_claude_dir/"
+            echo "   ✅ settings.local.json copied"
+        fi
+        
+        # Copy CLAUDE.md if it exists
+        if [ -f "$source_claude_dir/CLAUDE.md" ]; then
+            cp "$source_claude_dir/CLAUDE.md" "$target_claude_dir/"
+            echo "   ✅ CLAUDE.md copied"
+        fi
+        
+        # Copy other configuration files if they exist
+        for config_file in "hooks.json" "memory.md" "context.md"; do
+            if [ -f "$source_claude_dir/$config_file" ]; then
+                cp "$source_claude_dir/$config_file" "$target_claude_dir/"
+                echo "   ✅ $config_file copied"
+            fi
+        done
+        
+        echo "🎯 Claude settings inherited from parent"
+    else
+        echo "ℹ️  No .claude directory found in parent - starting fresh"
     fi
 }
 
