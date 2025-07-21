@@ -281,14 +281,26 @@ switch_worktree() {
     echo "🔄 Switching to worktree: $identifier"
     echo "📁 Directory: $worktree_dir"
     
-    # Open new iTerm2 tab if running in iTerm2, otherwise use current tab
+    # Open new iTerm2 tab with split panes if running in iTerm2, otherwise use current tab
     if [ "$TERM_PROGRAM" = "iTerm.app" ]; then
-        echo "🚀 Opening new iTerm2 tab and starting Claude Code..."
+        echo "🚀 Opening new iTerm2 tab with split panes..."
+        echo "📂 Top pane: Terminal in $worktree_dir"
+        echo "🤖 Bottom pane: Claude Code"
         osascript << EOF
 tell application "iTerm2"
     tell current window
         create tab with default profile
         tell current session of current tab
+            -- Set up top pane (terminal)
+            write text "cd '$worktree_dir'"
+            write text "echo '📂 Terminal ready in worktree: \$(basename \"$worktree_dir\")'"
+            
+            -- Split horizontally to create bottom pane
+            split horizontally with default profile
+        end tell
+        
+        -- Configure bottom pane (claude)
+        tell last session of current tab
             write text "cd '$worktree_dir'"
             write text "claude"
         end tell
