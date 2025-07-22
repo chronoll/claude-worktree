@@ -305,8 +305,7 @@ tell application "iTerm2"
         
         -- Configure bottom pane (claude)
         tell last session of current tab
-            write text "cd '$abs_worktree_dir'"
-            write text "claude"
+            write text "cd '$abs_worktree_dir' && claude"
         end tell
     end tell
 end tell
@@ -409,8 +408,7 @@ tell application "iTerm2"
         
         -- Configure bottom pane (claude)
         tell last session of current tab
-            write text "cd '$abs_worktree_dir'"
-            write text "claude"
+            write text "cd '$abs_worktree_dir' && claude"
         end tell
     end tell
 end tell
